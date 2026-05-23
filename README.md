@@ -47,7 +47,7 @@ Zusätzlich wird eine lokale Bodenebene aus den aktuellen Punktdaten geschätzt.
 
 ### Lokales Ground-Levelling
 
-Für das Levelling wird eine lokale ROI vor dem Fahrzeug verwendet. In diesem Bereich werden aus den tiefsten Punkten der Zellen Bodenstützpunkte bestimmt. Anschließend wird auf diese Punkte eine Ebene der Form
+Für das Levelling wird eine lokale ROI vor dem Fahrzeug verwendet. In diesem Bereich werden aus den tiefsten Punkten der Zellen Bodenstützpunkte bestimmt. Es ist darauf zu achten, dass die Levelling RoI größer ist als die Objekte in der RoI, da so sichergestellt wird, dass immer ein korrekter Bodenpunkt pro Zelle ermittelt werden kann. Anschließend wird auf diese Punkte eine Ebene der Form
 
 \[
 z = a x + b y + c
