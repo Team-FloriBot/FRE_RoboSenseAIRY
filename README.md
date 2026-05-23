@@ -1,6 +1,7 @@
 # FRE_RoboSenseAIRY
 
 Dieses Repository enthält die Arbeiten zur Verarbeitung von RoboSense-LiDAR-Daten für die Erkennung von Maispflanzen bzw. pflanzenähnlichen Strukturen in einem Versuchsaufbau.
+Bag-file auf bwsynch&share /rosbag2_2026_05_22-17_49_45
 
 ## Branch-Struktur
 
