@@ -21,7 +21,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(rslidar_launch)
         ),
 
-        Node(
+       Node(
             package='ground_segmentation',
             executable='ground_segmentation_node',
             name='ground_segmentation_node',
@@ -33,6 +33,8 @@ def generate_launch_description():
                 'nonground_topic': '/nonground_points',
                 'crop_topic': '/crop_points',
                 'obstacle_topic': '/obstacle_points',
+                'imu_topic': '/rslidar_imu_data',
+                'crop2d_topic': '/crop_points_2d',
 
                 'parent_frame': 'base_link',
                 'sensor_frame': 'rslidar',
@@ -49,9 +51,17 @@ def generate_launch_description():
                 'leveling_pitch_gain': 1.0,
                 'leveling_roll_gain': 1.0,
 
-                'use_ring_filter': True,
+                'use_ring_filter': False,
                 'ring_min': 30,
                 'ring_max': 120,
+                
+                
+                'use_imu_dynamic_stabilization': True,
+                'imu_alpha': 0.98,
+                'imu_baseline_alpha': 0.02,
+                'imu_dynamic_gain': 0.35,
+                'imu_roll_sign': 1.0,
+                'imu_pitch_sign': 1.0,
 
                 'use_local_ground_leveling': True,
                 'leveling_update_every_n_frames': 1,
@@ -95,30 +105,14 @@ def generate_launch_description():
                 'ground_band_height': 0.04,
 
                 'enable_crop_obstacle_split': True,
-                'cluster_tolerance': 0.18,
-                'cluster_min_size': 3,
-                'cluster_max_size': 12000,
-
-                'crop_min_height': 0.08,
-                'crop_max_height': 1.00,
-                'crop_max_width': 0.70,
-                'crop_max_depth': 0.70,
-                'crop_min_slenderness': 0.15,
-                'crop_max_ground_offset': 0.25,
-
-                'crop_max_base_area': 0.20,
-                'crop_bushy_min_height': 0.12,
-                'crop_bushy_max_footprint': 0.45,
-                'crop_bushy_max_base_area': 0.12,
-                'crop_min_density': 20.0,
-
-                'temporal_window_size': 4,
-
-                'use_row_prior': True,
-                'row_direction': 'x',
-                'row_spacing': 0.75,
-                'row_reference_coord': -0.375,
-                'row_tolerance': 0.18,
+                'cluster_tolerance': 0.24,
+                'cluster_min_size': 2,
+                'cluster_max_size': 20000,
+                
+                'crop_min_height': 0.1,
+                'crop_max_height': 0.50,
+                'crop_max_ground_offset': 0.2,
+                
             }]
         ),
 
