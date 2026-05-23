@@ -36,6 +36,7 @@ public:
     ground_topic_ = declare_parameter<std::string>("ground_topic", "/ground_points");
     nonground_topic_ = declare_parameter<std::string>("nonground_topic", "/nonground_points");
     crop_topic_ = declare_parameter<std::string>("crop_topic", "/crop_points");
+    crop2d_topic_ = declare_parameter<std::string>("crop2d_topic", "/crop_points_2d");
     obstacle_topic_ = declare_parameter<std::string>("obstacle_topic", "/obstacle_points");
 
     parent_frame_ = declare_parameter<std::string>("parent_frame", "base_link");
@@ -184,6 +185,7 @@ public:
     ground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(ground_topic_, out_qos);
     nonground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(nonground_topic_, out_qos);
     crop_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(crop_topic_, out_qos);
+    crop2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(crop2d_topic_, out_qos);
     obstacle_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(obstacle_topic_, out_qos);
 
     RCLCPP_INFO(get_logger(), "GroundSegmentationNode gestartet");
@@ -193,6 +195,7 @@ public:
     RCLCPP_INFO(get_logger(), "Ground topic: %s", ground_topic_.c_str());
     RCLCPP_INFO(get_logger(), "NonGround topic: %s", nonground_topic_.c_str());
     RCLCPP_INFO(get_logger(), "Crop topic: %s", crop_topic_.c_str());
+    RCLCPP_INFO(get_logger(), "Crop2D topic: %s", crop2d_topic_.c_str());
     RCLCPP_INFO(get_logger(), "Obstacle topic: %s", obstacle_topic_.c_str());
     RCLCPP_INFO(get_logger(), "Segmentation frame: %s", parent_frame_.c_str());
     RCLCPP_INFO(
@@ -785,6 +788,22 @@ private:
     return height_ok && attached_to_ground;
   }
 
+  pcl::PointCloud<pcl::PointXYZ> projectTo2D(const pcl::PointCloud<pcl::PointXYZ> & cloud) const
+  {
+    pcl::PointCloud<pcl::PointXYZ> out;
+    out.reserve(cloud.size());
+
+    for (const auto & p : cloud.points) {
+      pcl::PointXYZ q;
+      q.x = p.x;
+      q.y = p.y;
+      q.z = 0.0f;
+      out.push_back(q);
+    }
+
+    return out;
+  }
+
   void publishCloud(
     const pcl::PointCloud<pcl::PointXYZ> & cloud,
     const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr & pub,
@@ -1020,6 +1039,10 @@ private:
     }
 
     publishCloud(crop_cloud_parent, crop_pub_, msg->header.stamp, parent_frame_);
+
+    const pcl::PointCloud<pcl::PointXYZ> crop2d_cloud_parent = projectTo2D(crop_cloud_parent);
+    publishCloud(crop2d_cloud_parent, crop2d_pub_, msg->header.stamp, parent_frame_);
+
     publishCloud(obstacle_cloud_parent, obstacle_pub_, msg->header.stamp, parent_frame_);
   }
 
@@ -1029,6 +1052,7 @@ private:
   std::string ground_topic_;
   std::string nonground_topic_;
   std::string crop_topic_;
+  std::string crop2d_topic_;
   std::string obstacle_topic_;
 
   std::string parent_frame_;
@@ -1132,6 +1156,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ground_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr nonground_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr crop_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr crop2d_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
 };
 

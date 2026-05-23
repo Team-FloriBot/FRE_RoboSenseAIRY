@@ -30,6 +30,7 @@ def generate_launch_description():
                 'crop_topic': '/crop_points',
                 'obstacle_topic': '/obstacle_points',
                 'imu_topic': '/rslidar_imu_data',
+                'crop2d_topic': '/crop_points_2d',
 
                 'parent_frame': 'base_link',
                 'sensor_frame': 'rslidar',
