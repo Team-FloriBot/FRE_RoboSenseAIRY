@@ -18,6 +18,81 @@ Dazu gehören insbesondere:
   - `obstacle`
 - die aktuell funktionsfähige Basisversion zur Segmentierung
 
+  ## Levelling der Punktwolke
+
+Damit Boden, Pflanzen und Hindernisse zuverlässig segmentiert werden können, wird die Punktwolke vor der eigentlichen Segmentierung geometrisch ausgerichtet. Dieser Schritt wird im Projekt als **Levelling** bezeichnet.
+
+### Ziel des Levellings
+
+Das Ziel des Levellings ist es, die Punktwolke so zu transformieren, dass die lokale Bodenebene möglichst stabil und konsistent im verwendeten Arbeitsframe liegt. Dadurch werden insbesondere folgende Größen robuster:
+
+- Höhe von Clustern
+- Boden-/Nicht-Boden-Trennung
+- Crop-Segmentierung
+- Stabilität bei leichter Sensorneigung
+
+Das Levelling ist wichtig, weil der LiDAR nicht immer exakt waagrecht montiert ist und sich zusätzlich kleine Lageänderungen durch Aufbau oder Fahrbewegung ergeben können.
+
+### Grundprinzip
+
+Zunächst wird die Punktwolke aus dem Sensorsystem in das Arbeitskoordinatensystem transformiert. Dabei werden:
+
+- die Sensormontagehöhe
+- der initiale Roll-Winkel
+- der initiale Pitch-Winkel
+
+berücksichtigt.
+
+Zusätzlich wird eine lokale Bodenebene aus den aktuellen Punktdaten geschätzt. Daraus wird eine Korrektur für Roll und Pitch berechnet.
+
+### Lokales Ground-Levelling
+
+Für das Levelling wird eine lokale ROI vor dem Fahrzeug verwendet. In diesem Bereich werden aus den tiefsten Punkten der Zellen Bodenstützpunkte bestimmt. Anschließend wird auf diese Punkte eine Ebene der Form
+
+\[
+z = a x + b y + c
+\]
+
+angepasst.
+
+Aus den Ebenenparametern werden Korrekturwinkel für Pitch und Roll abgeleitet:
+
+- Pitch-Korrektur aus der Neigung in x-Richtung
+- Roll-Korrektur aus der Neigung in y-Richtung
+
+Diese Korrekturen werden iterativ verbessert und anschließend geglättet.
+
+### Iteratives Vorgehen
+
+Das Levelling erfolgt nicht nur einmal, sondern iterativ.  
+Dabei wird die aktuelle Punktwolke mehrfach mit der jeweils verbesserten Roll-/Pitch-Schätzung transformiert. Nach jeder Iteration wird die lokale Bodenebene erneut bestimmt.
+
+Dadurch wird erreicht, dass auch bei stärkerer Anfangsneigung eine stabilere Endausrichtung gefunden werden kann.
+
+### Glättung
+
+Damit kleine Schwankungen von Frame zu Frame nicht zu instabilen Ergebnissen führen, werden die berechneten Korrekturwinkel zeitlich geglättet. Dadurch bleibt die Ausrichtung stabiler und die nachfolgende Segmentierung wird robuster.
+
+### Zusammenspiel mit der IMU
+
+Im aktuellen Stand bleibt das lokale Ground-Levelling die Hauptkomponente zur stabilen Ausrichtung auf die lokale Bodenebene.
+
+Zusätzlich kann eine IMU-basierte dynamische Stabilisierung verwendet werden. Diese ergänzt das Levelling um kurzfristige Roll- und Pitch-Korrekturen während der Fahrt, um die Punktwolke bei Bewegung des Roboters weiter zu verbessern.
+
+Damit gilt vereinfacht:
+
+- **lokales Levelling** korrigiert die langfristige Ausrichtung zur Bodenebene
+- **IMU-Stabilisierung** korrigiert schnelle dynamische Bewegungen während der Fahrt
+
+### Vorteil für die Segmentierung
+
+Durch das Levelling wird die Segmentierung robuster, weil:
+
+- der Boden konsistenter erkannt wird
+- Höhenmerkmale stabiler werden
+- Pflanzencluster weniger stark schwanken
+- die Punktwolke trotz Montagefehlern oder Bewegung besser vergleichbar bleibt
+
 Der `main`-Branch dient damit als zentrale, möglichst saubere und nachvollziehbare Hauptversion.
 
 ### `parameter_test_feld`
