@@ -385,7 +385,7 @@ private:
   {
     pcl::PointXYZ out;
     out.x = p_sensor.x;
-    out.y = p_sensor.y;
+    out.y = -p_sensor.y;
     out.z = -p_sensor.z;
     return out;
   }
