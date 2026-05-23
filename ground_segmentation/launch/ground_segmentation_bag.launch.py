@@ -29,6 +29,7 @@ def generate_launch_description():
                 'nonground_topic': '/nonground_points',
                 'crop_topic': '/crop_points',
                 'obstacle_topic': '/obstacle_points',
+                'imu_topic': '/rslidar_imu_data',
 
                 'parent_frame': 'base_link',
                 'sensor_frame': 'rslidar',
@@ -48,6 +49,14 @@ def generate_launch_description():
                 'use_ring_filter': False,
                 'ring_min': 30,
                 'ring_max': 120,
+                
+                
+                'use_imu_dynamic_stabilization': True,
+                'imu_alpha': 0.98,
+                'imu_baseline_alpha': 0.02,
+                'imu_dynamic_gain': 0.35,
+                'imu_roll_sign': 1.0,
+                'imu_pitch_sign': 1.0,
 
                 'use_local_ground_leveling': True,
                 'leveling_update_every_n_frames': 1,
@@ -98,8 +107,7 @@ def generate_launch_description():
                 'crop_min_height': 0.1,
                 'crop_max_height': 0.50,
                 'crop_max_ground_offset': 0.2,
-
-
+                
             }]
         ),
 

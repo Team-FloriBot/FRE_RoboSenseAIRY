@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -11,6 +12,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/qos.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
@@ -29,6 +31,7 @@ public:
   GroundSegmentationNode() : Node("ground_segmentation_node")
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "/rslidar_points");
+    imu_topic_ = declare_parameter<std::string>("imu_topic", "/rslidar_imu_data");
     aligned_topic_ = declare_parameter<std::string>("aligned_topic", "/aligned_points");
     ground_topic_ = declare_parameter<std::string>("ground_topic", "/ground_points");
     nonground_topic_ = declare_parameter<std::string>("nonground_topic", "/nonground_points");
@@ -49,6 +52,19 @@ public:
     leveling_roll_sign_ = declare_parameter<double>("leveling_roll_sign", 1.0);
     leveling_pitch_gain_ = declare_parameter<double>("leveling_pitch_gain", 1.0);
     leveling_roll_gain_ = declare_parameter<double>("leveling_roll_gain", 1.0);
+
+    use_imu_dynamic_stabilization_ =
+      declare_parameter<bool>("use_imu_dynamic_stabilization", true);
+    imu_alpha_ =
+      declare_parameter<double>("imu_alpha", 0.98);
+    imu_baseline_alpha_ =
+      declare_parameter<double>("imu_baseline_alpha", 0.02);
+    imu_dynamic_gain_ =
+      declare_parameter<double>("imu_dynamic_gain", 0.35);
+    imu_roll_sign_ =
+      declare_parameter<double>("imu_roll_sign", 1.0);
+    imu_pitch_sign_ =
+      declare_parameter<double>("imu_pitch_sign", 1.0);
 
     use_ring_filter_ = declare_parameter<bool>("use_ring_filter", false);
     ring_min_ = declare_parameter<int>("ring_min", 0);
@@ -158,6 +174,11 @@ public:
       rclcpp::SensorDataQoS(),
       std::bind(&GroundSegmentationNode::cloudCallback, this, std::placeholders::_1));
 
+    imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
+      imu_topic_,
+      rclcpp::SensorDataQoS(),
+      std::bind(&GroundSegmentationNode::imuCallback, this, std::placeholders::_1));
+
     auto out_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
     aligned_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(aligned_topic_, out_qos);
     ground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(ground_topic_, out_qos);
@@ -167,6 +188,7 @@ public:
 
     RCLCPP_INFO(get_logger(), "GroundSegmentationNode gestartet");
     RCLCPP_INFO(get_logger(), "Input topic: %s", input_topic_.c_str());
+    RCLCPP_INFO(get_logger(), "IMU topic: %s", imu_topic_.c_str());
     RCLCPP_INFO(get_logger(), "Aligned topic: %s", aligned_topic_.c_str());
     RCLCPP_INFO(get_logger(), "Ground topic: %s", ground_topic_.c_str());
     RCLCPP_INFO(get_logger(), "NonGround topic: %s", nonground_topic_.c_str());
@@ -656,6 +678,83 @@ private:
       initial_roll_deg_ + estimated_roll_correction_rad_ * 180.0 / M_PI);
   }
 
+  void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
+  {
+    if (!use_imu_dynamic_stabilization_) {
+      return;
+    }
+
+    const double ax = static_cast<double>(msg->linear_acceleration.x);
+    const double ay = static_cast<double>(msg->linear_acceleration.y);
+    const double az = static_cast<double>(msg->linear_acceleration.z);
+
+    const double gx = static_cast<double>(msg->angular_velocity.x);
+    const double gy = static_cast<double>(msg->angular_velocity.y);
+
+    const double accel_roll =
+      imu_roll_sign_ * std::atan2(ay, az);
+
+    const double accel_pitch =
+      imu_pitch_sign_ * std::atan2(-ax, std::sqrt(ay * ay + az * az));
+
+    std::lock_guard<std::mutex> lock(imu_mutex_);
+
+    const rclcpp::Time now(msg->header.stamp);
+
+    if (!imu_initialized_) {
+      imu_roll_rad_ = accel_roll;
+      imu_pitch_rad_ = accel_pitch;
+
+      imu_roll_baseline_rad_ = imu_roll_rad_;
+      imu_pitch_baseline_rad_ = imu_pitch_rad_;
+
+      last_imu_time_ = now;
+      imu_initialized_ = true;
+      return;
+    }
+
+    double dt = (now - last_imu_time_).seconds();
+    last_imu_time_ = now;
+
+    if (!std::isfinite(dt) || dt <= 0.0 || dt > 0.1) {
+      dt = 0.01;
+    }
+
+    const double pred_roll = imu_roll_rad_ + gx * dt;
+    const double pred_pitch = imu_pitch_rad_ + gy * dt;
+
+    imu_roll_rad_ =
+      imu_alpha_ * pred_roll + (1.0 - imu_alpha_) * accel_roll;
+
+    imu_pitch_rad_ =
+      imu_alpha_ * pred_pitch + (1.0 - imu_alpha_) * accel_pitch;
+
+    imu_roll_baseline_rad_ =
+      (1.0 - imu_baseline_alpha_) * imu_roll_baseline_rad_ +
+      imu_baseline_alpha_ * imu_roll_rad_;
+
+    imu_pitch_baseline_rad_ =
+      (1.0 - imu_baseline_alpha_) * imu_pitch_baseline_rad_ +
+      imu_baseline_alpha_ * imu_pitch_rad_;
+  }
+
+  void getImuDynamicCorrection(double & roll_dyn_rad, double & pitch_dyn_rad) const
+  {
+    std::lock_guard<std::mutex> lock(imu_mutex_);
+
+    if (!imu_initialized_ || !use_imu_dynamic_stabilization_) {
+      roll_dyn_rad = 0.0;
+      pitch_dyn_rad = 0.0;
+      return;
+    }
+
+    roll_dyn_rad =
+      imu_dynamic_gain_ * (imu_roll_rad_ - imu_roll_baseline_rad_);
+
+    pitch_dyn_rad =
+      imu_dynamic_gain_ * (imu_pitch_rad_ - imu_pitch_baseline_rad_);
+  }
+
   ClusterFeatures computeClusterFeatures(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr & cloud,
     const pcl::PointIndices & indices) const
@@ -704,10 +803,19 @@ private:
     const auto raw_points = extractFilteredRawPoints(*msg);
     estimateLocalGroundLeveling(raw_points);
 
+    double imu_roll_dyn_rad = 0.0;
+    double imu_pitch_dyn_rad = 0.0;
+    getImuDynamicCorrection(imu_roll_dyn_rad, imu_pitch_dyn_rad);
+
     const double final_roll_rad =
-      initial_roll_deg_ * M_PI / 180.0 + estimated_roll_correction_rad_;
+      initial_roll_deg_ * M_PI / 180.0 +
+      estimated_roll_correction_rad_ +
+      imu_roll_dyn_rad;
+
     const double final_pitch_rad =
-      initial_pitch_deg_ * M_PI / 180.0 + estimated_pitch_correction_rad_;
+      initial_pitch_deg_ * M_PI / 180.0 +
+      estimated_pitch_correction_rad_ +
+      imu_pitch_dyn_rad;
 
     std::vector<Cell> cells(nx_ * ny_);
     std::vector<pcl::PointXYZ> roi_points_parent;
@@ -916,6 +1024,7 @@ private:
   }
 
   std::string input_topic_;
+  std::string imu_topic_;
   std::string aligned_topic_;
   std::string ground_topic_;
   std::string nonground_topic_;
@@ -935,6 +1044,13 @@ private:
   double leveling_roll_sign_;
   double leveling_pitch_gain_;
   double leveling_roll_gain_;
+
+  bool use_imu_dynamic_stabilization_;
+  double imu_alpha_;
+  double imu_baseline_alpha_;
+  double imu_dynamic_gain_;
+  double imu_roll_sign_;
+  double imu_pitch_sign_;
 
   bool use_ring_filter_;
   int ring_min_;
@@ -1002,7 +1118,16 @@ private:
   int leveling_nx_;
   int leveling_ny_;
 
+  mutable std::mutex imu_mutex_;
+  bool imu_initialized_{false};
+  rclcpp::Time last_imu_time_{0, 0, RCL_ROS_TIME};
+  double imu_roll_rad_{0.0};
+  double imu_pitch_rad_{0.0};
+  double imu_roll_baseline_rad_{0.0};
+  double imu_pitch_baseline_rad_{0.0};
+
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr aligned_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ground_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr nonground_pub_;
