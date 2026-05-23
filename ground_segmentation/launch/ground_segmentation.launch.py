@@ -98,12 +98,27 @@ def generate_launch_description():
                 'cluster_tolerance': 0.18,
                 'cluster_min_size': 3,
                 'cluster_max_size': 12000,
+
                 'crop_min_height': 0.08,
                 'crop_max_height': 1.00,
                 'crop_max_width': 0.70,
                 'crop_max_depth': 0.70,
                 'crop_min_slenderness': 0.15,
                 'crop_max_ground_offset': 0.25,
+
+                'crop_max_base_area': 0.20,
+                'crop_bushy_min_height': 0.12,
+                'crop_bushy_max_footprint': 0.45,
+                'crop_bushy_max_base_area': 0.12,
+                'crop_min_density': 20.0,
+
+                'temporal_window_size': 4,
+
+                'use_row_prior': True,
+                'row_direction': 'x',
+                'row_spacing': 0.75,
+                'row_reference_coord': -0.375,
+                'row_tolerance': 0.18,
             }]
         ),
 

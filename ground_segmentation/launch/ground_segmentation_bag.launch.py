@@ -9,13 +9,7 @@ def generate_launch_description():
     pkg_share = get_package_share_directory('ground_segmentation')
     rviz_config = os.path.join(pkg_share, 'config', 'point_visual.rviz')
 
-    bag_path = os.path.abspath(
-        os.path.join(
-            pkg_share, '..', '..', '..', '..',
-            'src', 'FRE_RoboSenseAIRY', 'ground_segmentation', 'data',
-            'rosbag2_2026_05_22-17_49_45'
-        )
-    )
+    bag_path = os.path.expanduser('~/rosbag2_2026_05_22-17_49_45')
 
     return LaunchDescription([
         ExecuteProcess(
@@ -51,7 +45,7 @@ def generate_launch_description():
                 'leveling_pitch_gain': 1.0,
                 'leveling_roll_gain': 1.0,
 
-                'use_ring_filter': True,
+                'use_ring_filter': False,
                 'ring_min': 30,
                 'ring_max': 120,
 
@@ -97,15 +91,15 @@ def generate_launch_description():
                 'ground_band_height': 0.04,
 
                 'enable_crop_obstacle_split': True,
-                'cluster_tolerance': 0.18,
-                'cluster_min_size': 3,
-                'cluster_max_size': 12000,
-                'crop_min_height': 0.08,
-                'crop_max_height': 1.00,
-                'crop_max_width': 0.70,
-                'crop_max_depth': 0.70,
-                'crop_min_slenderness': 0.15,
-                'crop_max_ground_offset': 0.25,
+                'cluster_tolerance': 0.24,
+                'cluster_min_size': 2,
+                'cluster_max_size': 20000,
+                
+                'crop_min_height': 0.1,
+                'crop_max_height': 0.50,
+                'crop_max_ground_offset': 0.2,
+
+
             }]
         ),
 

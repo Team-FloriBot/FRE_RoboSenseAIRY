@@ -42,7 +42,6 @@ public:
     mount_y_ = declare_parameter<double>("mount_y", 0.0);
     mount_z_ = declare_parameter<double>("mount_z", 0.50);
 
-    // Feste Montage-Offsets als Startwert / Kalibrierung
     initial_pitch_deg_ = declare_parameter<double>("initial_pitch_deg", -20.0);
     initial_roll_deg_ = declare_parameter<double>("initial_roll_deg", 0.0);
 
@@ -61,21 +60,15 @@ public:
     publish_aligned_cloud_ =
       declare_parameter<bool>("publish_aligned_cloud", true);
 
-    // ---------------------------
-    // Iteratives Levelling auf lokaler Bodenebene
-    // ---------------------------
     use_local_ground_leveling_ =
       declare_parameter<bool>("use_local_ground_leveling", true);
     leveling_update_every_n_frames_ =
       declare_parameter<int>("leveling_update_every_n_frames", 1);
     leveling_stride_ =
       declare_parameter<int>("leveling_stride", 4);
-
-    // äußerer Filter über Frames
     leveling_alpha_ =
       declare_parameter<double>("leveling_alpha", 0.25);
 
-    // innere Iteration pro Frame
     iterative_leveling_iterations_ =
       declare_parameter<int>("iterative_leveling_iterations", 4);
     iterative_leveling_step_gain_ =
@@ -102,9 +95,6 @@ public:
     leveling_neighbor_radius_ =
       declare_parameter<int>("leveling_neighbor_radius", 1);
 
-    // ---------------------------
-    // Segmentierungs-ROI
-    // ---------------------------
     roi_x_min_ = declare_parameter<double>("roi_x_min", 0.0);
     roi_x_max_ = declare_parameter<double>("roi_x_max", 6.0);
     roi_y_min_ = declare_parameter<double>("roi_y_min", -2.0);
@@ -112,9 +102,6 @@ public:
     roi_z_min_ = declare_parameter<double>("roi_z_min", -1.0);
     roi_z_max_ = declare_parameter<double>("roi_z_max", 2.0);
 
-    // ---------------------------
-    // Lokale Bodenebenen-Segmentierung
-    // ---------------------------
     grid_resolution_ = declare_parameter<double>("grid_resolution", 0.08);
     min_points_per_cell_ = declare_parameter<int>("min_points_per_cell", 2);
     local_plane_neighbor_radius_ =
@@ -125,37 +112,33 @@ public:
     base_ground_threshold_ = declare_parameter<double>("base_ground_threshold", 0.05);
     distance_threshold_coeff_ = declare_parameter<double>("distance_threshold_coeff", 0.01);
     negative_outlier_threshold_ = declare_parameter<double>("negative_outlier_threshold", 0.10);
-
     obstacle_height_span_threshold_ =
       declare_parameter<double>("obstacle_height_span_threshold", 0.12);
     ground_band_height_ =
       declare_parameter<double>("ground_band_height", 0.04);
 
-    // ---------------------------
-    // Crop / obstacle split
-    // ---------------------------
     enable_crop_obstacle_split_ =
       declare_parameter<bool>("enable_crop_obstacle_split", true);
 
     cluster_tolerance_ =
-      declare_parameter<double>("cluster_tolerance", 0.08);
+      declare_parameter<double>("cluster_tolerance", 0.24);
     cluster_min_size_ =
-      declare_parameter<int>("cluster_min_size", 10);
+      declare_parameter<int>("cluster_min_size", 2);
     cluster_max_size_ =
-      declare_parameter<int>("cluster_max_size", 5000);
+      declare_parameter<int>("cluster_max_size", 20000);
 
     crop_min_height_ =
-      declare_parameter<double>("crop_min_height", 0.08);
+      declare_parameter<double>("crop_min_height", 0.04);
     crop_max_height_ =
       declare_parameter<double>("crop_max_height", 1.20);
     crop_max_width_ =
-      declare_parameter<double>("crop_max_width", 0.25);
+      declare_parameter<double>("crop_max_width", 1.20);
     crop_max_depth_ =
-      declare_parameter<double>("crop_max_depth", 0.25);
-    crop_min_slenderness_ =
-      declare_parameter<double>("crop_min_slenderness", 1.2);
+      declare_parameter<double>("crop_max_depth", 1.20);
     crop_max_ground_offset_ =
-      declare_parameter<double>("crop_max_ground_offset", 0.08);
+      declare_parameter<double>("crop_max_ground_offset", 0.45);
+    crop_max_base_area_ =
+      declare_parameter<double>("crop_max_base_area", 0.45);
 
     nx_ = static_cast<int>(std::ceil((roi_x_max_ - roi_x_min_) / grid_resolution_));
     ny_ = static_cast<int>(std::ceil((roi_y_max_ - roi_y_min_) / grid_resolution_));
@@ -216,7 +199,7 @@ private:
   struct Plane
   {
     bool valid = false;
-    double a = 0.0;  // z = a*x + b*y + c
+    double a = 0.0;
     double b = 0.0;
     double c = 0.0;
   };
@@ -234,7 +217,7 @@ private:
     float width() const { return max_x - min_x; }
     float depth() const { return max_y - min_y; }
     float height() const { return max_z - min_z; }
-    float max_horizontal_extent() const { return std::max(width(), depth()); }
+    float base_area() const { return width() * depth(); }
   };
 
   void buildAllowedRingSet()
@@ -259,7 +242,9 @@ private:
     return ring >= ring_min_ && ring <= ring_max_;
   }
 
-  bool cloudHasField(const sensor_msgs::msg::PointCloud2 & msg, const std::string & field_name) const
+  bool cloudHasField(
+    const sensor_msgs::msg::PointCloud2 & msg,
+    const std::string & field_name) const
   {
     for (const auto & f : msg.fields) {
       if (f.name == field_name) {
@@ -694,17 +679,11 @@ private:
   bool isCropCluster(const ClusterFeatures & f) const
   {
     const double h = static_cast<double>(f.height());
-    const double w = static_cast<double>(f.width());
-    const double d = static_cast<double>(f.depth());
-    const double horiz = std::max(static_cast<double>(f.max_horizontal_extent()), 1e-3);
-    const double slenderness = h / horiz;
     const bool height_ok = h >= crop_min_height_ && h <= crop_max_height_;
-    const bool width_ok = w <= crop_max_width_;
-    const bool depth_ok = d <= crop_max_depth_;
-    const bool slender_ok = slenderness >= crop_min_slenderness_;
-    const bool attached_to_ground = static_cast<double>(f.min_z) <= crop_max_ground_offset_;
+    const bool attached_to_ground =
+      static_cast<double>(f.min_z) <= crop_max_ground_offset_;
 
-    return height_ok && width_ok && depth_ok && slender_ok && attached_to_ground;
+    return height_ok && attached_to_ground;
   }
 
   void publishCloud(
@@ -988,8 +967,6 @@ private:
   double leveling_grid_resolution_;
   int leveling_min_cells_;
   int leveling_neighbor_radius_;
-  int leveling_nx_;
-  int leveling_ny_;
 
   double roi_x_min_;
   double roi_x_max_;
@@ -1012,15 +989,18 @@ private:
   double cluster_tolerance_;
   int cluster_min_size_;
   int cluster_max_size_;
+
   double crop_min_height_;
   double crop_max_height_;
   double crop_max_width_;
   double crop_max_depth_;
-  double crop_min_slenderness_;
   double crop_max_ground_offset_;
+  double crop_max_base_area_;
 
   int nx_;
   int ny_;
+  int leveling_nx_;
+  int leveling_ny_;
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr aligned_pub_;
