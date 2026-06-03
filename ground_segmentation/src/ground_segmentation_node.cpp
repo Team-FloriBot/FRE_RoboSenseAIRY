@@ -14,6 +14,7 @@
 #include <rclcpp/qos.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
 #include <pcl/point_cloud.h>
@@ -81,6 +82,14 @@ public:
 
     publish_aligned_cloud_ =
       declare_parameter<bool>("publish_aligned_cloud", true);
+
+    scan_angle_min_ = declare_parameter<double>("scan_angle_min", -3.14159265358979323846);
+    scan_angle_max_ = declare_parameter<double>("scan_angle_max", 3.14159265358979323846);
+    scan_angle_increment_ =
+      declare_parameter<double>("scan_angle_increment", 3.14159265358979323846 / 360.0);
+    scan_range_min_ = declare_parameter<double>("scan_range_min", 0.05);
+    scan_range_max_ = declare_parameter<double>("scan_range_max", 30.0);
+    scan_time_ = declare_parameter<double>("scan_time", 0.0);
 
     use_local_ground_leveling_ =
       declare_parameter<bool>("use_local_ground_leveling", true);
@@ -192,11 +201,11 @@ public:
     crop_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(crop_topic_, out_qos);
     obstacle_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(obstacle_topic_, out_qos);
 
-    aligned2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(aligned2d_topic_, out_qos);
-    ground2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(ground2d_topic_, out_qos);
-    nonground2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(nonground2d_topic_, out_qos);
-    crop2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(crop2d_topic_, out_qos);
-    obstacle2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(obstacle2d_topic_, out_qos);
+    aligned2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(aligned2d_topic_, out_qos);
+    ground2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(ground2d_topic_, out_qos);
+    nonground2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(nonground2d_topic_, out_qos);
+    crop2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(crop2d_topic_, out_qos);
+    obstacle2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(obstacle2d_topic_, out_qos);
 
     RCLCPP_INFO(get_logger(), "GroundSegmentationNode gestartet");
   }
@@ -804,6 +813,61 @@ private:
     pub->publish(out_msg);
   }
 
+  void publishScan(
+    const pcl::PointCloud<pcl::PointXYZ> & cloud,
+    const rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr & pub,
+    const builtin_interfaces::msg::Time & stamp,
+    const std::string & frame_id)
+  {
+    sensor_msgs::msg::LaserScan scan;
+    scan.header.stamp = stamp;
+    scan.header.frame_id = frame_id;
+    scan.angle_min = static_cast<float>(scan_angle_min_);
+    scan.angle_max = static_cast<float>(scan_angle_max_);
+    scan.angle_increment = static_cast<float>(scan_angle_increment_);
+    scan.time_increment = 0.0f;
+    scan.scan_time = static_cast<float>(scan_time_);
+    scan.range_min = static_cast<float>(scan_range_min_);
+    scan.range_max = static_cast<float>(scan_range_max_);
+
+    const int beam_count = static_cast<int>(
+      std::floor((scan_angle_max_ - scan_angle_min_) / scan_angle_increment_)) + 1;
+
+    if (beam_count <= 0) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "LaserScan-Parameter ungueltig: angle_min, angle_max oder angle_increment pruefen.");
+      return;
+    }
+
+    scan.ranges.assign(static_cast<std::size_t>(beam_count),
+      std::numeric_limits<float>::infinity());
+
+    for (const auto & p : cloud.points) {
+      const double range = std::hypot(static_cast<double>(p.x), static_cast<double>(p.y));
+      if (!std::isfinite(range) || range < scan_range_min_ || range > scan_range_max_) {
+        continue;
+      }
+
+      const double angle = std::atan2(static_cast<double>(p.y), static_cast<double>(p.x));
+      if (angle < scan_angle_min_ || angle > scan_angle_max_) {
+        continue;
+      }
+
+      const int idx = static_cast<int>(std::floor((angle - scan_angle_min_) / scan_angle_increment_));
+      if (idx < 0 || idx >= beam_count) {
+        continue;
+      }
+
+      auto & r = scan.ranges[static_cast<std::size_t>(idx)];
+      if (range < static_cast<double>(r)) {
+        r = static_cast<float>(range);
+      }
+    }
+
+    pub->publish(scan);
+  }
+
   void cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
   {
     const auto raw_points = extractFilteredRawPoints(*msg);
@@ -865,7 +929,7 @@ private:
 
     if (publish_aligned_cloud_) {
       publishCloud(aligned_cloud_parent, aligned_pub_, msg->header.stamp, parent_frame_);
-      publishCloud(projectTo2D(aligned_cloud_parent), aligned2d_pub_, msg->header.stamp, parent_frame_);
+      publishScan(aligned_cloud_parent, aligned2d_pub_, msg->header.stamp, parent_frame_);
     }
 
     for (auto & c : cells) {
@@ -988,10 +1052,10 @@ private:
     }
 
     publishCloud(ground_cloud_parent, ground_pub_, msg->header.stamp, parent_frame_);
-    publishCloud(projectTo2D(ground_cloud_parent), ground2d_pub_, msg->header.stamp, parent_frame_);
+    publishScan(ground_cloud_parent, ground2d_pub_, msg->header.stamp, parent_frame_);
 
     publishCloud(nonground_cloud_parent, nonground_pub_, msg->header.stamp, parent_frame_);
-    publishCloud(projectTo2D(nonground_cloud_parent), nonground2d_pub_, msg->header.stamp, parent_frame_);
+    publishScan(nonground_cloud_parent, nonground2d_pub_, msg->header.stamp, parent_frame_);
 
     pcl::PointCloud<pcl::PointXYZ> crop_cloud_parent;
     pcl::PointCloud<pcl::PointXYZ> obstacle_cloud_parent;
@@ -1030,10 +1094,10 @@ private:
     }
 
     publishCloud(crop_cloud_parent, crop_pub_, msg->header.stamp, parent_frame_);
-    publishCloud(projectTo2D(crop_cloud_parent), crop2d_pub_, msg->header.stamp, parent_frame_);
+    publishScan(crop_cloud_parent, crop2d_pub_, msg->header.stamp, parent_frame_);
 
     publishCloud(obstacle_cloud_parent, obstacle_pub_, msg->header.stamp, parent_frame_);
-    publishCloud(projectTo2D(obstacle_cloud_parent), obstacle2d_pub_, msg->header.stamp, parent_frame_);
+    publishScan(obstacle_cloud_parent, obstacle2d_pub_, msg->header.stamp, parent_frame_);
   }
 
   std::string input_topic_;
@@ -1077,6 +1141,13 @@ private:
   std::vector<int64_t> allowed_rings_raw_;
   std::unordered_set<int> allowed_rings_;
   bool warned_missing_ring_;
+
+  double scan_angle_min_;
+  double scan_angle_max_;
+  double scan_angle_increment_;
+  double scan_range_min_;
+  double scan_range_max_;
+  double scan_time_;
 
   bool publish_aligned_cloud_;
 
@@ -1153,11 +1224,11 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr crop_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
 
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr aligned2d_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ground2d_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr nonground2d_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr crop2d_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle2d_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr aligned2d_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr ground2d_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr nonground2d_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr crop2d_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr obstacle2d_pub_;
 };
 
 int main(int argc, char ** argv)
