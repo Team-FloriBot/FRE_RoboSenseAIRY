@@ -1,6 +1,4 @@
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 import os
@@ -10,18 +8,8 @@ def generate_launch_description():
     pkg_share = get_package_share_directory('ground_segmentation')
     rviz_config = os.path.join(pkg_share, 'config', 'point_visual.rviz')
 
-    rslidar_launch = os.path.join(
-        get_package_share_directory('rslidar_sdk'),
-        'launch',
-        'start.py'
-    )
-
     return LaunchDescription([
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(rslidar_launch)
-        ),
-
-       Node(
+        Node(
             package='ground_segmentation',
             executable='ground_segmentation_node',
             name='ground_segmentation_node',
@@ -33,8 +21,6 @@ def generate_launch_description():
                 'nonground_topic': '/nonground_points',
                 'crop_topic': '/crop_points',
                 'obstacle_topic': '/obstacle_points',
-                'imu_topic': '/rslidar_imu_data',
-                'crop2d_topic': '/crop_points_2d',
 
                 'parent_frame': 'base_link',
                 'sensor_frame': 'rslidar',
@@ -51,17 +37,9 @@ def generate_launch_description():
                 'leveling_pitch_gain': 1.0,
                 'leveling_roll_gain': 1.0,
 
-                'use_ring_filter': False,
+                'use_ring_filter': True,
                 'ring_min': 30,
                 'ring_max': 120,
-                
-                
-                'use_imu_dynamic_stabilization': True,
-                'imu_alpha': 0.98,
-                'imu_baseline_alpha': 0.02,
-                'imu_dynamic_gain': 0.35,
-                'imu_roll_sign': 1.0,
-                'imu_pitch_sign': 1.0,
 
                 'use_local_ground_leveling': True,
                 'leveling_update_every_n_frames': 1,
@@ -105,14 +83,15 @@ def generate_launch_description():
                 'ground_band_height': 0.04,
 
                 'enable_crop_obstacle_split': True,
-                'cluster_tolerance': 0.24,
-                'cluster_min_size': 2,
-                'cluster_max_size': 20000,
-                
-                'crop_min_height': 0.1,
-                'crop_max_height': 0.50,
-                'crop_max_ground_offset': 0.2,
-                
+                'cluster_tolerance': 0.18,
+                'cluster_min_size': 3,
+                'cluster_max_size': 12000,
+                'crop_min_height': 0.08,
+                'crop_max_height': 1.00,
+                'crop_max_width': 0.70,
+                'crop_max_depth': 0.70,
+                'crop_min_slenderness': 0.15,
+                'crop_max_ground_offset': 0.25,
             }]
         ),
 
