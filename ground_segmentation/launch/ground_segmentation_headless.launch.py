@@ -23,10 +23,12 @@ def generate_launch_description():
             description='Path to rslidar_sdk config.yaml'
         ),
 
+        # Kein name='rslidar_sdk_node' setzen.
+        # Sonst werden mehrere interne rclcpp::Node-Instanzen des RoboSense-SDKs
+        # auf denselben Namen remapped.
         Node(
             package='rslidar_sdk',
             executable='rslidar_sdk_node',
-            name='rslidar_sdk_node',
             output='screen',
             parameters=[{
                 'config_path': LaunchConfiguration('rslidar_config')
@@ -50,7 +52,7 @@ def generate_launch_description():
                 'crop_topic': '/crop_points',
                 'obstacle_topic': '/obstacle_points',
                 'imu_topic': '/rslidar_imu_data',
-                'crop2d_topic': '/crop_points_2d',
+
                 'aligned2d_topic': '/aligned_points_2d',
                 'ground2d_topic': '/ground_points_2d',
                 'nonground2d_topic': '/nonground_points_2d',
@@ -76,7 +78,8 @@ def generate_launch_description():
                 'ring_min': 30,
                 'ring_max': 120,
 
-                'use_imu_dynamic_stabilization': True,
+                # Erst deaktiviert lassen, bis /rslidar_imu_data sicher läuft.
+                'use_imu_dynamic_stabilization': False,
                 'imu_alpha': 0.98,
                 'imu_baseline_alpha': 0.02,
                 'imu_dynamic_gain': 0.35,
