@@ -51,6 +51,11 @@ def generate_launch_description():
                 'obstacle_topic': '/obstacle_points',
                 'imu_topic': '/rslidar_imu_data',
                 'crop2d_topic': '/crop_points_2d',
+                'aligned2d_topic': '/aligned_points_2d',
+                'ground2d_topic': '/ground_points_2d',
+                'nonground2d_topic': '/nonground_points_2d',
+                'crop2d_topic': '/crop_points_2d',
+                'obstacle2d_topic': '/obstacle_points_2d',
 
                 'parent_frame': 'base_link',
                 'sensor_frame': 'rslidar',

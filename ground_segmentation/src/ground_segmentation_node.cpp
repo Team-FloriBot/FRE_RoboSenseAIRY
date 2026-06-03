@@ -36,8 +36,13 @@ public:
     ground_topic_ = declare_parameter<std::string>("ground_topic", "/ground_points");
     nonground_topic_ = declare_parameter<std::string>("nonground_topic", "/nonground_points");
     crop_topic_ = declare_parameter<std::string>("crop_topic", "/crop_points");
-    crop2d_topic_ = declare_parameter<std::string>("crop2d_topic", "/crop_points_2d");
     obstacle_topic_ = declare_parameter<std::string>("obstacle_topic", "/obstacle_points");
+
+    aligned2d_topic_ = declare_parameter<std::string>("aligned2d_topic", "/aligned_points_2d");
+    ground2d_topic_ = declare_parameter<std::string>("ground2d_topic", "/ground_points_2d");
+    nonground2d_topic_ = declare_parameter<std::string>("nonground2d_topic", "/nonground_points_2d");
+    crop2d_topic_ = declare_parameter<std::string>("crop2d_topic", "/crop_points_2d");
+    obstacle2d_topic_ = declare_parameter<std::string>("obstacle2d_topic", "/obstacle_points_2d");
 
     parent_frame_ = declare_parameter<std::string>("parent_frame", "base_link");
     sensor_frame_ = declare_parameter<std::string>("sensor_frame", "rslidar");
@@ -185,22 +190,15 @@ public:
     ground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(ground_topic_, out_qos);
     nonground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(nonground_topic_, out_qos);
     crop_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(crop_topic_, out_qos);
-    crop2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(crop2d_topic_, out_qos);
     obstacle_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(obstacle_topic_, out_qos);
 
+    aligned2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(aligned2d_topic_, out_qos);
+    ground2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(ground2d_topic_, out_qos);
+    nonground2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(nonground2d_topic_, out_qos);
+    crop2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(crop2d_topic_, out_qos);
+    obstacle2d_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(obstacle2d_topic_, out_qos);
+
     RCLCPP_INFO(get_logger(), "GroundSegmentationNode gestartet");
-    RCLCPP_INFO(get_logger(), "Input topic: %s", input_topic_.c_str());
-    RCLCPP_INFO(get_logger(), "IMU topic: %s", imu_topic_.c_str());
-    RCLCPP_INFO(get_logger(), "Aligned topic: %s", aligned_topic_.c_str());
-    RCLCPP_INFO(get_logger(), "Ground topic: %s", ground_topic_.c_str());
-    RCLCPP_INFO(get_logger(), "NonGround topic: %s", nonground_topic_.c_str());
-    RCLCPP_INFO(get_logger(), "Crop topic: %s", crop_topic_.c_str());
-    RCLCPP_INFO(get_logger(), "Crop2D topic: %s", crop2d_topic_.c_str());
-    RCLCPP_INFO(get_logger(), "Obstacle topic: %s", obstacle_topic_.c_str());
-    RCLCPP_INFO(get_logger(), "Segmentation frame: %s", parent_frame_.c_str());
-    RCLCPP_INFO(
-      get_logger(), "Initial pitch=%.2f deg, roll=%.2f deg",
-      initial_pitch_deg_, initial_roll_deg_);
   }
 
 private:
@@ -668,17 +666,6 @@ private:
       std::max(-max_pitch_corr, std::min(estimated_pitch_correction_rad_, max_pitch_corr));
     estimated_roll_correction_rad_ =
       std::max(-max_roll_corr, std::min(estimated_roll_correction_rad_, max_roll_corr));
-
-    RCLCPP_INFO_THROTTLE(
-      get_logger(), *get_clock(), 1000,
-      "Iterative leveling: cells=%zu last_pitch=%.2f last_roll=%.2f corr_pitch=%.2f corr_roll=%.2f final_pitch=%.2f final_roll=%.2f",
-      last_cell_count,
-      last_measured_pitch * 180.0 / M_PI,
-      last_measured_roll * 180.0 / M_PI,
-      estimated_pitch_correction_rad_ * 180.0 / M_PI,
-      estimated_roll_correction_rad_ * 180.0 / M_PI,
-      initial_pitch_deg_ + estimated_pitch_correction_rad_ * 180.0 / M_PI,
-      initial_roll_deg_ + estimated_roll_correction_rad_ * 180.0 / M_PI);
   }
 
   void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
@@ -878,6 +865,7 @@ private:
 
     if (publish_aligned_cloud_) {
       publishCloud(aligned_cloud_parent, aligned_pub_, msg->header.stamp, parent_frame_);
+      publishCloud(projectTo2D(aligned_cloud_parent), aligned2d_pub_, msg->header.stamp, parent_frame_);
     }
 
     for (auto & c : cells) {
@@ -1000,7 +988,10 @@ private:
     }
 
     publishCloud(ground_cloud_parent, ground_pub_, msg->header.stamp, parent_frame_);
+    publishCloud(projectTo2D(ground_cloud_parent), ground2d_pub_, msg->header.stamp, parent_frame_);
+
     publishCloud(nonground_cloud_parent, nonground_pub_, msg->header.stamp, parent_frame_);
+    publishCloud(projectTo2D(nonground_cloud_parent), nonground2d_pub_, msg->header.stamp, parent_frame_);
 
     pcl::PointCloud<pcl::PointXYZ> crop_cloud_parent;
     pcl::PointCloud<pcl::PointXYZ> obstacle_cloud_parent;
@@ -1039,11 +1030,10 @@ private:
     }
 
     publishCloud(crop_cloud_parent, crop_pub_, msg->header.stamp, parent_frame_);
-
-    const pcl::PointCloud<pcl::PointXYZ> crop2d_cloud_parent = projectTo2D(crop_cloud_parent);
-    publishCloud(crop2d_cloud_parent, crop2d_pub_, msg->header.stamp, parent_frame_);
+    publishCloud(projectTo2D(crop_cloud_parent), crop2d_pub_, msg->header.stamp, parent_frame_);
 
     publishCloud(obstacle_cloud_parent, obstacle_pub_, msg->header.stamp, parent_frame_);
+    publishCloud(projectTo2D(obstacle_cloud_parent), obstacle2d_pub_, msg->header.stamp, parent_frame_);
   }
 
   std::string input_topic_;
@@ -1052,8 +1042,13 @@ private:
   std::string ground_topic_;
   std::string nonground_topic_;
   std::string crop_topic_;
-  std::string crop2d_topic_;
   std::string obstacle_topic_;
+
+  std::string aligned2d_topic_;
+  std::string ground2d_topic_;
+  std::string nonground2d_topic_;
+  std::string crop2d_topic_;
+  std::string obstacle2d_topic_;
 
   std::string parent_frame_;
   std::string sensor_frame_;
@@ -1156,8 +1151,13 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ground_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr nonground_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr crop_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr crop2d_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
+
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr aligned2d_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ground2d_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr nonground2d_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr crop2d_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle2d_pub_;
 };
 
 int main(int argc, char ** argv)
