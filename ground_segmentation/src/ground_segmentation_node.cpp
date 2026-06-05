@@ -208,6 +208,29 @@ public:
     obstacle2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(obstacle2d_topic_, out_qos);
 
     RCLCPP_INFO(get_logger(), "GroundSegmentationNode gestartet");
+    RCLCPP_INFO(
+      get_logger(),
+      "input=%s parent_frame=%s sensor_frame=%s aligned=%s aligned2d=%s ground=%s ground2d=%s nonground=%s nonground2d=%s crop=%s crop2d=%s obstacle=%s obstacle2d=%s",
+      input_topic_.c_str(),
+      parent_frame_.c_str(),
+      sensor_frame_.c_str(),
+      aligned_topic_.c_str(),
+      aligned2d_topic_.c_str(),
+      ground_topic_.c_str(),
+      ground2d_topic_.c_str(),
+      nonground_topic_.c_str(),
+      nonground2d_topic_.c_str(),
+      crop_topic_.c_str(),
+      crop2d_topic_.c_str(),
+      obstacle_topic_.c_str(),
+      obstacle2d_topic_.c_str());
+    RCLCPP_INFO(
+      get_logger(),
+      "publish_aligned_cloud=%s use_ring_filter=%s use_local_ground_leveling=%s enable_crop_obstacle_split=%s",
+      publish_aligned_cloud_ ? "true" : "false",
+      use_ring_filter_ ? "true" : "false",
+      use_local_ground_leveling_ ? "true" : "false",
+      enable_crop_obstacle_split_ ? "true" : "false");
   }
 
 private:
@@ -291,8 +314,9 @@ private:
     std::vector<RawPoint> points;
     points.reserve(static_cast<std::size_t>(msg.width) * static_cast<std::size_t>(msg.height));
 
-    const bool has_ring = cloudHasField(msg, "ring");
-    if (!has_ring && !warned_missing_ring_) {
+    const bool cloud_has_ring = cloudHasField(msg, "ring");
+    const bool has_ring = use_ring_filter_ && cloud_has_ring;
+    if (use_ring_filter_ && !cloud_has_ring && !warned_missing_ring_) {
       RCLCPP_WARN(get_logger(), "PointCloud2 hat kein 'ring'-Feld. Ringfilter wird ignoriert.");
       warned_missing_ring_ = true;
     }
@@ -870,234 +894,319 @@ private:
 
   void cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
   {
-    const auto raw_points = extractFilteredRawPoints(*msg);
-    estimateLocalGroundLeveling(raw_points);
+    try {
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback: stamp=%u.%u frame=%s width=%u height=%u point_step=%u row_step=%u data=%zu fields=%zu",
+        msg->header.stamp.sec,
+        msg->header.stamp.nanosec,
+        msg->header.frame_id.c_str(),
+        msg->width,
+        msg->height,
+        msg->point_step,
+        msg->row_step,
+        msg->data.size(),
+        msg->fields.size());
 
-    double imu_roll_dyn_rad = 0.0;
-    double imu_pitch_dyn_rad = 0.0;
-    getImuDynamicCorrection(imu_roll_dyn_rad, imu_pitch_dyn_rad);
+      const auto raw_points = extractFilteredRawPoints(*msg);
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback: raw_points=%zu use_ring_filter=%s",
+        raw_points.size(),
+        use_ring_filter_ ? "true" : "false");
 
-    const double final_roll_rad =
-      initial_roll_deg_ * M_PI / 180.0 +
-      estimated_roll_correction_rad_ +
-      imu_roll_dyn_rad;
+      estimateLocalGroundLeveling(raw_points);
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback: leveling roll_corr=%.3f deg pitch_corr=%.3f deg",
+        estimated_roll_correction_rad_ * 180.0 / M_PI,
+        estimated_pitch_correction_rad_ * 180.0 / M_PI);
 
-    const double final_pitch_rad =
-      initial_pitch_deg_ * M_PI / 180.0 +
-      estimated_pitch_correction_rad_ +
-      imu_pitch_dyn_rad;
+      double imu_roll_dyn_rad = 0.0;
+      double imu_pitch_dyn_rad = 0.0;
+      getImuDynamicCorrection(imu_roll_dyn_rad, imu_pitch_dyn_rad);
 
-    std::vector<Cell> cells(nx_ * ny_);
-    std::vector<pcl::PointXYZ> roi_points_parent;
-    roi_points_parent.reserve(raw_points.size());
+      const double final_roll_rad =
+        initial_roll_deg_ * M_PI / 180.0 +
+        estimated_roll_correction_rad_ +
+        imu_roll_dyn_rad;
 
-    pcl::PointCloud<pcl::PointXYZ> aligned_cloud_parent;
-    if (publish_aligned_cloud_) {
-      aligned_cloud_parent.reserve(raw_points.size());
-    }
+      const double final_pitch_rad =
+        initial_pitch_deg_ * M_PI / 180.0 +
+        estimated_pitch_correction_rad_ +
+        imu_pitch_dyn_rad;
 
-    for (const auto & p_sensor : raw_points) {
-      const pcl::PointXYZ p_up = invertZOnly(p_sensor);
-      const pcl::PointXYZ p_parent =
-        transformWithAngles(p_up, final_roll_rad, final_pitch_rad);
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback: final_roll=%.3f deg final_pitch=%.3f deg imu_roll_dyn=%.3f deg imu_pitch_dyn=%.3f deg",
+        final_roll_rad * 180.0 / M_PI,
+        final_pitch_rad * 180.0 / M_PI,
+        imu_roll_dyn_rad * 180.0 / M_PI,
+        imu_pitch_dyn_rad * 180.0 / M_PI);
 
+      std::vector<Cell> cells(nx_ * ny_);
+      std::vector<pcl::PointXYZ> roi_points_parent;
+      roi_points_parent.reserve(raw_points.size());
+
+      pcl::PointCloud<pcl::PointXYZ> aligned_cloud_parent;
       if (publish_aligned_cloud_) {
-        aligned_cloud_parent.push_back(p_parent);
+        aligned_cloud_parent.reserve(raw_points.size());
       }
 
-      if (!inROI(p_parent)) {
-        continue;
-      }
+      for (const auto & p_sensor : raw_points) {
+        const pcl::PointXYZ p_up = invertZOnly(p_sensor);
+        const pcl::PointXYZ p_parent =
+          transformWithAngles(p_up, final_roll_rad, final_pitch_rad);
 
-      const int cx = ix(p_parent.x);
-      const int cy = iy(p_parent.y);
-      if (cx < 0 || cx >= nx_ || cy < 0 || cy >= ny_) {
-        continue;
-      }
-
-      Cell & cell = cells[cellIndex(cx, cy)];
-      cell.count++;
-      if (p_parent.z < cell.min_z) {
-        cell.min_z = p_parent.z;
-      }
-      if (p_parent.z > cell.max_z) {
-        cell.max_z = p_parent.z;
-      }
-
-      roi_points_parent.push_back(p_parent);
-    }
-
-    if (publish_aligned_cloud_) {
-      publishCloud(aligned_cloud_parent, aligned_pub_, msg->header.stamp, parent_frame_);
-      publishScan(aligned_cloud_parent, aligned2d_pub_, msg->header.stamp, parent_frame_);
-    }
-
-    for (auto & c : cells) {
-      if (c.count >= min_points_per_cell_ && std::isfinite(c.min_z)) {
-        c.valid = true;
-      }
-    }
-
-    for (int cy = 0; cy < ny_; ++cy) {
-      for (int cx = 0; cx < nx_; ++cx) {
-        Cell & c = cells[cellIndex(cx, cy)];
-        std::vector<float> neighbors;
-        neighbors.reserve(25);
-
-        for (int dy = -local_plane_neighbor_radius_; dy <= local_plane_neighbor_radius_; ++dy) {
-          for (int dx = -local_plane_neighbor_radius_; dx <= local_plane_neighbor_radius_; ++dx) {
-            const int nx = cx + dx;
-            const int ny = cy + dy;
-            if (nx < 0 || nx >= this->nx_ || ny < 0 || ny >= this->ny_) {
-              continue;
-            }
-            const Cell & n = cells[cellIndex(nx, ny)];
-            if (n.valid && std::isfinite(n.min_z)) {
-              neighbors.push_back(n.min_z);
-            }
-          }
+        if (publish_aligned_cloud_) {
+          aligned_cloud_parent.push_back(p_parent);
         }
 
-        if (!neighbors.empty()) {
-          c.smoothed_z = median(neighbors);
+        if (!inROI(p_parent)) {
+          continue;
+        }
+
+        const int cx = ix(p_parent.x);
+        const int cy = iy(p_parent.y);
+        if (cx < 0 || cx >= nx_ || cy < 0 || cy >= ny_) {
+          continue;
+        }
+
+        Cell & cell = cells[cellIndex(cx, cy)];
+        cell.count++;
+        if (p_parent.z < cell.min_z) {
+          cell.min_z = p_parent.z;
+        }
+        if (p_parent.z > cell.max_z) {
+          cell.max_z = p_parent.z;
+        }
+
+        roi_points_parent.push_back(p_parent);
+      }
+
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback: aligned_points=%zu roi_points=%zu grid=%dx%d",
+        aligned_cloud_parent.size(),
+        roi_points_parent.size(),
+        nx_,
+        ny_);
+
+      if (publish_aligned_cloud_) {
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "cloudCallback: publishing aligned_cloud=%zu aligned_scan frame=%s",
+          aligned_cloud_parent.size(),
+          parent_frame_.c_str());
+        publishCloud(aligned_cloud_parent, aligned_pub_, msg->header.stamp, parent_frame_);
+        publishScan(aligned_cloud_parent, aligned2d_pub_, msg->header.stamp, parent_frame_);
+      }
+
+      for (auto & c : cells) {
+        if (c.count >= min_points_per_cell_ && std::isfinite(c.min_z)) {
           c.valid = true;
         }
       }
-    }
 
-    std::vector<Plane> local_planes(static_cast<std::size_t>(nx_ * ny_));
+      for (int cy = 0; cy < ny_; ++cy) {
+        for (int cx = 0; cx < nx_; ++cx) {
+          Cell & c = cells[cellIndex(cx, cy)];
+          std::vector<float> neighbors;
+          neighbors.reserve(25);
 
-    for (int cy = 0; cy < ny_; ++cy) {
-      for (int cx = 0; cx < nx_; ++cx) {
-        std::vector<std::array<double, 3>> plane_pts;
-        plane_pts.reserve(25);
-
-        for (int dy = -local_plane_neighbor_radius_; dy <= local_plane_neighbor_radius_; ++dy) {
-          for (int dx = -local_plane_neighbor_radius_; dx <= local_plane_neighbor_radius_; ++dx) {
-            const int nx = cx + dx;
-            const int ny = cy + dy;
-            if (nx < 0 || nx >= this->nx_ || ny < 0 || ny >= this->ny_) {
-              continue;
+          for (int dy = -local_plane_neighbor_radius_; dy <= local_plane_neighbor_radius_; ++dy) {
+            for (int dx = -local_plane_neighbor_radius_; dx <= local_plane_neighbor_radius_; ++dx) {
+              const int nx = cx + dx;
+              const int ny = cy + dy;
+              if (nx < 0 || nx >= this->nx_ || ny < 0 || ny >= this->ny_) {
+                continue;
+              }
+              const Cell & n = cells[cellIndex(nx, ny)];
+              if (n.valid && std::isfinite(n.min_z)) {
+                neighbors.push_back(n.min_z);
+              }
             }
+          }
 
-            const Cell & n = cells[cellIndex(nx, ny)];
-            if (!n.valid || !std::isfinite(n.smoothed_z)) {
-              continue;
-            }
-
-            const double x_center =
-              roi_x_min_ + (static_cast<double>(nx) + 0.5) * grid_resolution_;
-            const double y_center =
-              roi_y_min_ + (static_cast<double>(ny) + 0.5) * grid_resolution_;
-
-            plane_pts.push_back({x_center, y_center, static_cast<double>(n.smoothed_z)});
+          if (!neighbors.empty()) {
+            c.smoothed_z = median(neighbors);
+            c.valid = true;
           }
         }
+      }
 
-        Plane plane;
-        if (static_cast<int>(plane_pts.size()) >= local_plane_min_cells_) {
-          fitPlaneZ(plane_pts, plane);
+      std::vector<Plane> local_planes(static_cast<std::size_t>(nx_ * ny_));
+
+      for (int cy = 0; cy < ny_; ++cy) {
+        for (int cx = 0; cx < nx_; ++cx) {
+          std::vector<std::array<double, 3>> plane_pts;
+          plane_pts.reserve(25);
+
+          for (int dy = -local_plane_neighbor_radius_; dy <= local_plane_neighbor_radius_; ++dy) {
+            for (int dx = -local_plane_neighbor_radius_; dx <= local_plane_neighbor_radius_; ++dx) {
+              const int nx = cx + dx;
+              const int ny = cy + dy;
+              if (nx < 0 || nx >= this->nx_ || ny < 0 || ny >= this->ny_) {
+                continue;
+              }
+
+              const Cell & n = cells[cellIndex(nx, ny)];
+              if (!n.valid || !std::isfinite(n.smoothed_z)) {
+                continue;
+              }
+
+              const double x_center =
+                roi_x_min_ + (static_cast<double>(nx) + 0.5) * grid_resolution_;
+              const double y_center =
+                roi_y_min_ + (static_cast<double>(ny) + 0.5) * grid_resolution_;
+
+              plane_pts.push_back({x_center, y_center, static_cast<double>(n.smoothed_z)});
+            }
+          }
+
+          Plane plane;
+          if (static_cast<int>(plane_pts.size()) >= local_plane_min_cells_) {
+            fitPlaneZ(plane_pts, plane);
+          }
+          local_planes[static_cast<std::size_t>(cellIndex(cx, cy))] = plane;
         }
-        local_planes[static_cast<std::size_t>(cellIndex(cx, cy))] = plane;
-      }
-    }
-
-    pcl::PointCloud<pcl::PointXYZ> ground_cloud_parent;
-    pcl::PointCloud<pcl::PointXYZ> nonground_cloud_parent;
-    ground_cloud_parent.reserve(roi_points_parent.size());
-    nonground_cloud_parent.reserve(roi_points_parent.size());
-
-    for (const auto & p : roi_points_parent) {
-      const int cx = ix(p.x);
-      const int cy = iy(p.y);
-
-      if (cx < 0 || cx >= nx_ || cy < 0 || cy >= ny_) {
-        nonground_cloud_parent.push_back(p);
-        continue;
       }
 
-      const Plane & plane = local_planes[static_cast<std::size_t>(cellIndex(cx, cy))];
-      const Cell & c = cells[cellIndex(cx, cy)];
+      pcl::PointCloud<pcl::PointXYZ> ground_cloud_parent;
+      pcl::PointCloud<pcl::PointXYZ> nonground_cloud_parent;
+      ground_cloud_parent.reserve(roi_points_parent.size());
+      nonground_cloud_parent.reserve(roi_points_parent.size());
 
-      if (!plane.valid || !c.valid) {
-        nonground_cloud_parent.push_back(p);
-        continue;
-      }
+      for (const auto & p : roi_points_parent) {
+        const int cx = ix(p.x);
+        const int cy = iy(p.y);
 
-      const double z_plane =
-        plane.a * static_cast<double>(p.x) +
-        plane.b * static_cast<double>(p.y) +
-        plane.c;
+        if (cx < 0 || cx >= nx_ || cy < 0 || cy >= ny_) {
+          nonground_cloud_parent.push_back(p);
+          continue;
+        }
 
-      const double dz = static_cast<double>(p.z) - z_plane;
-      const double range_xy = std::hypot(p.x, p.y);
-      const double adaptive_thresh =
-        base_ground_threshold_ + distance_threshold_coeff_ * range_xy;
-      const double cell_span = static_cast<double>(c.max_z) - static_cast<double>(c.min_z);
+        const Plane & plane = local_planes[static_cast<std::size_t>(cellIndex(cx, cy))];
+        const Cell & c = cells[cellIndex(cx, cy)];
 
-      if (cell_span > obstacle_height_span_threshold_) {
-        if (dz >= -negative_outlier_threshold_ && dz <= ground_band_height_) {
+        if (!plane.valid || !c.valid) {
+          nonground_cloud_parent.push_back(p);
+          continue;
+        }
+
+        const double z_plane =
+          plane.a * static_cast<double>(p.x) +
+          plane.b * static_cast<double>(p.y) +
+          plane.c;
+
+        const double dz = static_cast<double>(p.z) - z_plane;
+        const double range_xy = std::hypot(p.x, p.y);
+        const double adaptive_thresh =
+          base_ground_threshold_ + distance_threshold_coeff_ * range_xy;
+        const double cell_span = static_cast<double>(c.max_z) - static_cast<double>(c.min_z);
+
+        if (cell_span > obstacle_height_span_threshold_) {
+          if (dz >= -negative_outlier_threshold_ && dz <= ground_band_height_) {
+            ground_cloud_parent.push_back(p);
+          } else {
+            nonground_cloud_parent.push_back(p);
+          }
+          continue;
+        }
+
+        if (dz >= -negative_outlier_threshold_ && dz <= adaptive_thresh) {
           ground_cloud_parent.push_back(p);
         } else {
           nonground_cloud_parent.push_back(p);
         }
-        continue;
       }
 
-      if (dz >= -negative_outlier_threshold_ && dz <= adaptive_thresh) {
-        ground_cloud_parent.push_back(p);
-      } else {
-        nonground_cloud_parent.push_back(p);
-      }
-    }
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback: ground=%zu nonground=%zu",
+        ground_cloud_parent.size(),
+        nonground_cloud_parent.size());
 
-    publishCloud(ground_cloud_parent, ground_pub_, msg->header.stamp, parent_frame_);
-    publishScan(ground_cloud_parent, ground2d_pub_, msg->header.stamp, parent_frame_);
+      publishCloud(ground_cloud_parent, ground_pub_, msg->header.stamp, parent_frame_);
+      publishScan(ground_cloud_parent, ground2d_pub_, msg->header.stamp, parent_frame_);
 
-    publishCloud(nonground_cloud_parent, nonground_pub_, msg->header.stamp, parent_frame_);
-    publishScan(nonground_cloud_parent, nonground2d_pub_, msg->header.stamp, parent_frame_);
+      publishCloud(nonground_cloud_parent, nonground_pub_, msg->header.stamp, parent_frame_);
+      publishScan(nonground_cloud_parent, nonground2d_pub_, msg->header.stamp, parent_frame_);
 
-    pcl::PointCloud<pcl::PointXYZ> crop_cloud_parent;
-    pcl::PointCloud<pcl::PointXYZ> obstacle_cloud_parent;
+      pcl::PointCloud<pcl::PointXYZ> crop_cloud_parent;
+      pcl::PointCloud<pcl::PointXYZ> obstacle_cloud_parent;
 
-    if (enable_crop_obstacle_split_ && !nonground_cloud_parent.empty()) {
-      pcl::PointCloud<pcl::PointXYZ>::Ptr nonground_ptr(
-        new pcl::PointCloud<pcl::PointXYZ>(nonground_cloud_parent));
+      if (enable_crop_obstacle_split_ && !nonground_cloud_parent.empty()) {
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "cloudCallback: clustering nonground=%zu tolerance=%.3f min=%d max=%d",
+          nonground_cloud_parent.size(),
+          cluster_tolerance_,
+          cluster_min_size_,
+          cluster_max_size_);
 
-      pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
-      tree->setInputCloud(nonground_ptr);
+        pcl::PointCloud<pcl::PointXYZ>::Ptr nonground_ptr(
+          new pcl::PointCloud<pcl::PointXYZ>(nonground_cloud_parent));
 
-      std::vector<pcl::PointIndices> cluster_indices;
-      pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-      ec.setClusterTolerance(cluster_tolerance_);
-      ec.setMinClusterSize(cluster_min_size_);
-      ec.setMaxClusterSize(cluster_max_size_);
-      ec.setSearchMethod(tree);
-      ec.setInputCloud(nonground_ptr);
-      ec.extract(cluster_indices);
+        pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
+        tree->setInputCloud(nonground_ptr);
 
-      for (const auto & cluster : cluster_indices) {
-        const ClusterFeatures f = computeClusterFeatures(nonground_ptr, cluster);
-        const bool crop = isCropCluster(f);
+        std::vector<pcl::PointIndices> cluster_indices;
+        pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
+        ec.setClusterTolerance(cluster_tolerance_);
+        ec.setMinClusterSize(cluster_min_size_);
+        ec.setMaxClusterSize(cluster_max_size_);
+        ec.setSearchMethod(tree);
+        ec.setInputCloud(nonground_ptr);
+        ec.extract(cluster_indices);
 
-        for (const int idx : cluster.indices) {
-          const auto & p = nonground_ptr->points[idx];
-          if (crop) {
-            crop_cloud_parent.push_back(p);
-          } else {
-            obstacle_cloud_parent.push_back(p);
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "cloudCallback: clusters=%zu",
+          cluster_indices.size());
+
+        for (const auto & cluster : cluster_indices) {
+          const ClusterFeatures f = computeClusterFeatures(nonground_ptr, cluster);
+          const bool crop = isCropCluster(f);
+
+          for (const int idx : cluster.indices) {
+            const auto & p = nonground_ptr->points[idx];
+            if (crop) {
+              crop_cloud_parent.push_back(p);
+            } else {
+              obstacle_cloud_parent.push_back(p);
+            }
           }
         }
+      } else {
+        obstacle_cloud_parent = nonground_cloud_parent;
       }
-    } else {
-      obstacle_cloud_parent = nonground_cloud_parent;
+
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback: crop=%zu obstacle=%zu",
+        crop_cloud_parent.size(),
+        obstacle_cloud_parent.size());
+
+      publishCloud(crop_cloud_parent, crop_pub_, msg->header.stamp, parent_frame_);
+      publishScan(crop_cloud_parent, crop2d_pub_, msg->header.stamp, parent_frame_);
+
+      publishCloud(obstacle_cloud_parent, obstacle_pub_, msg->header.stamp, parent_frame_);
+      publishScan(obstacle_cloud_parent, obstacle2d_pub_, msg->header.stamp, parent_frame_);
+
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback: done");
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback exception: %s",
+        e.what());
+    } catch (...) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback unknown exception");
     }
-
-    publishCloud(crop_cloud_parent, crop_pub_, msg->header.stamp, parent_frame_);
-    publishScan(crop_cloud_parent, crop2d_pub_, msg->header.stamp, parent_frame_);
-
-    publishCloud(obstacle_cloud_parent, obstacle_pub_, msg->header.stamp, parent_frame_);
-    publishScan(obstacle_cloud_parent, obstacle2d_pub_, msg->header.stamp, parent_frame_);
   }
 
   std::string input_topic_;
