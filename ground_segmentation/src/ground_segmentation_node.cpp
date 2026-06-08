@@ -17,6 +17,8 @@
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
+#include <geometry_msgs/msg/transform_stamped.hpp>
+
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -25,6 +27,10 @@
 
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Transform.h>
+#include <tf2/exceptions.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
 
 class GroundSegmentationNode : public rclcpp::Node
 {
@@ -184,6 +190,9 @@ public:
     frame_counter_ = 0;
     warned_missing_ring_ = false;
 
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
     sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
       input_topic_,
       rclcpp::SensorDataQoS(),
@@ -194,7 +203,7 @@ public:
       rclcpp::SensorDataQoS(),
       std::bind(&GroundSegmentationNode::imuCallback, this, std::placeholders::_1));
 
-    auto out_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+    auto out_qos = rclcpp::QoS(rclcpp::KeepLast(2)).best_effort().durability_volatile();
     aligned_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(aligned_topic_, out_qos);
     ground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(ground_topic_, out_qos);
     nonground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(nonground_topic_, out_qos);
@@ -231,6 +240,10 @@ public:
       use_ring_filter_ ? "true" : "false",
       use_local_ground_leveling_ ? "true" : "false",
       enable_crop_obstacle_split_ ? "true" : "false");
+    RCLCPP_INFO(
+      get_logger(),
+      "Extrinsik wird aus TF gelesen: Eingang frame_id -> %s",
+      parent_frame_.c_str());
   }
 
 private:
@@ -640,9 +653,6 @@ private:
     Plane plane;
 
     bool any_success = false;
-    double last_measured_pitch = 0.0;
-    double last_measured_roll = 0.0;
-    std::size_t last_cell_count = 0;
 
     for (int iter = 0; iter < std::max(1, iterative_leveling_iterations_); ++iter) {
       const double roll_rad = initial_roll_deg_ * M_PI / 180.0 + work_roll_corr;
@@ -651,7 +661,6 @@ private:
       if (!collectLevelingPlanePoints(raw_points, roll_rad, pitch_rad, plane_pts)) {
         break;
       }
-      last_cell_count = plane_pts.size();
 
       if (!fitPlaneZ(plane_pts, plane) || !plane.valid) {
         break;
@@ -662,8 +671,6 @@ private:
       const double measured_roll =
         leveling_roll_sign_ * leveling_roll_gain_ * (-std::atan(plane.b));
 
-      last_measured_pitch = measured_pitch;
-      last_measured_roll = measured_roll;
       any_success = true;
 
       const double delta_pitch = iterative_leveling_step_gain_ * measured_pitch;
@@ -824,6 +831,48 @@ private:
     return out;
   }
 
+  bool transformInputCloudToParent(
+    const sensor_msgs::msg::PointCloud2 & input,
+    sensor_msgs::msg::PointCloud2 & output)
+  {
+    if (input.header.frame_id.empty()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Eingangswolke hat leeren frame_id. Transformation nach '%s' nicht möglich.",
+        parent_frame_.c_str());
+      return false;
+    }
+
+    if (input.header.frame_id == parent_frame_) {
+      output = input;
+      output.header.stamp = input.header.stamp;
+      output.header.frame_id = parent_frame_;
+      return true;
+    }
+
+    try {
+      const geometry_msgs::msg::TransformStamped transform =
+        tf_buffer_->lookupTransform(
+          parent_frame_,
+          input.header.frame_id,
+          input.header.stamp,
+          rclcpp::Duration::from_seconds(0.05));
+
+      tf2::doTransform(input, output, transform);
+      output.header.stamp = input.header.stamp;
+      output.header.frame_id = parent_frame_;
+      return true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "TF-Transformation von '%s' nach '%s' fehlgeschlagen: %s",
+        input.header.frame_id.c_str(),
+        parent_frame_.c_str(),
+        ex.what());
+      return false;
+    }
+  }
+
   void publishCloud(
     const pcl::PointCloud<pcl::PointXYZ> & cloud,
     const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr & pub,
@@ -908,41 +957,18 @@ private:
         msg->data.size(),
         msg->fields.size());
 
-      const auto raw_points = extractFilteredRawPoints(*msg);
+      sensor_msgs::msg::PointCloud2 cloud_parent_msg;
+      if (!transformInputCloudToParent(*msg, cloud_parent_msg)) {
+        return;
+      }
+
+      const auto raw_points = extractFilteredRawPoints(cloud_parent_msg);
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 1000,
-        "cloudCallback: raw_points=%zu use_ring_filter=%s",
+        "cloudCallback: raw_points=%zu use_ring_filter=%s transformed_frame=%s",
         raw_points.size(),
-        use_ring_filter_ ? "true" : "false");
-
-      estimateLocalGroundLeveling(raw_points);
-      RCLCPP_INFO_THROTTLE(
-        get_logger(), *get_clock(), 1000,
-        "cloudCallback: leveling roll_corr=%.3f deg pitch_corr=%.3f deg",
-        estimated_roll_correction_rad_ * 180.0 / M_PI,
-        estimated_pitch_correction_rad_ * 180.0 / M_PI);
-
-      double imu_roll_dyn_rad = 0.0;
-      double imu_pitch_dyn_rad = 0.0;
-      getImuDynamicCorrection(imu_roll_dyn_rad, imu_pitch_dyn_rad);
-
-      const double final_roll_rad =
-        initial_roll_deg_ * M_PI / 180.0 +
-        estimated_roll_correction_rad_ +
-        imu_roll_dyn_rad;
-
-      const double final_pitch_rad =
-        initial_pitch_deg_ * M_PI / 180.0 +
-        estimated_pitch_correction_rad_ +
-        imu_pitch_dyn_rad;
-
-      RCLCPP_INFO_THROTTLE(
-        get_logger(), *get_clock(), 1000,
-        "cloudCallback: final_roll=%.3f deg final_pitch=%.3f deg imu_roll_dyn=%.3f deg imu_pitch_dyn=%.3f deg",
-        final_roll_rad * 180.0 / M_PI,
-        final_pitch_rad * 180.0 / M_PI,
-        imu_roll_dyn_rad * 180.0 / M_PI,
-        imu_pitch_dyn_rad * 180.0 / M_PI);
+        use_ring_filter_ ? "true" : "false",
+        cloud_parent_msg.header.frame_id.c_str());
 
       std::vector<Cell> cells(nx_ * ny_);
       std::vector<pcl::PointXYZ> roi_points_parent;
@@ -954,9 +980,10 @@ private:
       }
 
       for (const auto & p_sensor : raw_points) {
-        const pcl::PointXYZ p_up = invertZOnly(p_sensor);
-        const pcl::PointXYZ p_parent =
-          transformWithAngles(p_up, final_roll_rad, final_pitch_rad);
+        pcl::PointXYZ p_parent;
+        p_parent.x = p_sensor.x;
+        p_parent.y = p_sensor.y;
+        p_parent.z = p_sensor.z;
 
         if (publish_aligned_cloud_) {
           aligned_cloud_parent.push_back(p_parent);
@@ -1137,14 +1164,6 @@ private:
       pcl::PointCloud<pcl::PointXYZ> obstacle_cloud_parent;
 
       if (enable_crop_obstacle_split_ && !nonground_cloud_parent.empty()) {
-        RCLCPP_INFO_THROTTLE(
-          get_logger(), *get_clock(), 1000,
-          "cloudCallback: clustering nonground=%zu tolerance=%.3f min=%d max=%d",
-          nonground_cloud_parent.size(),
-          cluster_tolerance_,
-          cluster_min_size_,
-          cluster_max_size_);
-
         pcl::PointCloud<pcl::PointXYZ>::Ptr nonground_ptr(
           new pcl::PointCloud<pcl::PointXYZ>(nonground_cloud_parent));
 
@@ -1159,11 +1178,6 @@ private:
         ec.setSearchMethod(tree);
         ec.setInputCloud(nonground_ptr);
         ec.extract(cluster_indices);
-
-        RCLCPP_INFO_THROTTLE(
-          get_logger(), *get_clock(), 1000,
-          "cloudCallback: clusters=%zu",
-          cluster_indices.size());
 
         for (const auto & cluster : cluster_indices) {
           const ClusterFeatures f = computeClusterFeatures(nonground_ptr, cluster);
@@ -1193,10 +1207,6 @@ private:
 
       publishCloud(obstacle_cloud_parent, obstacle_pub_, msg->header.stamp, parent_frame_);
       publishScan(obstacle_cloud_parent, obstacle2d_pub_, msg->header.stamp, parent_frame_);
-
-      RCLCPP_INFO_THROTTLE(
-        get_logger(), *get_clock(), 1000,
-        "cloudCallback: done");
     } catch (const std::exception & e) {
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 1000,
@@ -1324,6 +1334,9 @@ private:
   double imu_pitch_rad_{0.0};
   double imu_roll_baseline_rad_{0.0};
   double imu_pitch_baseline_rad_{0.0};
+
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
