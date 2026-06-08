@@ -203,18 +203,20 @@ public:
       rclcpp::SensorDataQoS(),
       std::bind(&GroundSegmentationNode::imuCallback, this, std::placeholders::_1));
 
-    auto out_qos = rclcpp::QoS(rclcpp::KeepLast(2)).best_effort().durability_volatile();
-    aligned_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(aligned_topic_, out_qos);
-    ground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(ground_topic_, out_qos);
-    nonground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(nonground_topic_, out_qos);
-    crop_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(crop_topic_, out_qos);
-    obstacle_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(obstacle_topic_, out_qos);
+    auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(2)).best_effort().durability_volatile();
+    auto scan_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
 
-    aligned2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(aligned2d_topic_, out_qos);
-    ground2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(ground2d_topic_, out_qos);
-    nonground2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(nonground2d_topic_, out_qos);
-    crop2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(crop2d_topic_, out_qos);
-    obstacle2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(obstacle2d_topic_, out_qos);
+    aligned_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(aligned_topic_, cloud_qos);
+    ground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(ground_topic_, cloud_qos);
+    nonground_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(nonground_topic_, cloud_qos);
+    crop_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(crop_topic_, cloud_qos);
+    obstacle_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(obstacle_topic_, cloud_qos);
+
+    aligned2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(aligned2d_topic_, scan_qos);
+    ground2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(ground2d_topic_, scan_qos);
+    nonground2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(nonground2d_topic_, scan_qos);
+    crop2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(crop2d_topic_, scan_qos);
+    obstacle2d_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(obstacle2d_topic_, scan_qos);
 
     RCLCPP_INFO(get_logger(), "GroundSegmentationNode gestartet");
     RCLCPP_INFO(
@@ -653,6 +655,9 @@ private:
     Plane plane;
 
     bool any_success = false;
+    double last_measured_pitch = 0.0;
+    double last_measured_roll = 0.0;
+    std::size_t last_cell_count = 0;
 
     for (int iter = 0; iter < std::max(1, iterative_leveling_iterations_); ++iter) {
       const double roll_rad = initial_roll_deg_ * M_PI / 180.0 + work_roll_corr;
@@ -661,6 +666,7 @@ private:
       if (!collectLevelingPlanePoints(raw_points, roll_rad, pitch_rad, plane_pts)) {
         break;
       }
+      last_cell_count = plane_pts.size();
 
       if (!fitPlaneZ(plane_pts, plane) || !plane.valid) {
         break;
@@ -671,6 +677,8 @@ private:
       const double measured_roll =
         leveling_roll_sign_ * leveling_roll_gain_ * (-std::atan(plane.b));
 
+      last_measured_pitch = measured_pitch;
+      last_measured_roll = measured_roll;
       any_success = true;
 
       const double delta_pitch = iterative_leveling_step_gain_ * measured_pitch;
@@ -1164,6 +1172,14 @@ private:
       pcl::PointCloud<pcl::PointXYZ> obstacle_cloud_parent;
 
       if (enable_crop_obstacle_split_ && !nonground_cloud_parent.empty()) {
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "cloudCallback: clustering nonground=%zu tolerance=%.3f min=%d max=%d",
+          nonground_cloud_parent.size(),
+          cluster_tolerance_,
+          cluster_min_size_,
+          cluster_max_size_);
+
         pcl::PointCloud<pcl::PointXYZ>::Ptr nonground_ptr(
           new pcl::PointCloud<pcl::PointXYZ>(nonground_cloud_parent));
 
@@ -1178,6 +1194,11 @@ private:
         ec.setSearchMethod(tree);
         ec.setInputCloud(nonground_ptr);
         ec.extract(cluster_indices);
+
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "cloudCallback: clusters=%zu",
+          cluster_indices.size());
 
         for (const auto & cluster : cluster_indices) {
           const ClusterFeatures f = computeClusterFeatures(nonground_ptr, cluster);
@@ -1207,6 +1228,10 @@ private:
 
       publishCloud(obstacle_cloud_parent, obstacle_pub_, msg->header.stamp, parent_frame_);
       publishScan(obstacle_cloud_parent, obstacle2d_pub_, msg->header.stamp, parent_frame_);
+
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cloudCallback: done");
     } catch (const std::exception & e) {
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 1000,
