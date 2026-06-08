@@ -203,7 +203,7 @@ public:
       rclcpp::SensorDataQoS(),
       std::bind(&GroundSegmentationNode::imuCallback, this, std::placeholders::_1));
 
-    auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(2)).reliable().durability_volatile();
+    auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(2)).best_effort().durability_volatile();
     auto scan_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
 
     aligned_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(aligned_topic_, cloud_qos);
@@ -924,7 +924,12 @@ private:
     scan.ranges.assign(static_cast<std::size_t>(beam_count),
       std::numeric_limits<float>::infinity());
 
-    for (const auto & p : cloud.points) {
+    // Gleicher 3D->2D-Ansatz wie bei der projizierten PointCloud:
+    // x und y bleiben unverändert, z wird auf 0 gesetzt. Anschließend
+    // wird pro Winkelstrahl der kleinste Abstand in der XY-Ebene gewählt.
+    const pcl::PointCloud<pcl::PointXYZ> cloud_2d = projectTo2D(cloud);
+
+    for (const auto & p : cloud_2d.points) {
       const double range = std::hypot(static_cast<double>(p.x), static_cast<double>(p.y));
       if (!std::isfinite(range) || range < scan_range_min_ || range > scan_range_max_) {
         continue;
