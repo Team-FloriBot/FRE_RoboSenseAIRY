@@ -110,7 +110,7 @@ def generate_launch_description():
 
                 'publish_aligned_cloud': True,
 
-                'roi_x_min': 0.0,
+                'roi_x_min': 1.0,
                 'roi_x_max': 6.0,
                 'roi_y_min': -2.0,
                 'roi_y_max': 2.0,
