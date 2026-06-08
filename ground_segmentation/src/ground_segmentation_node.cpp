@@ -203,7 +203,7 @@ public:
       rclcpp::SensorDataQoS(),
       std::bind(&GroundSegmentationNode::imuCallback, this, std::placeholders::_1));
 
-    auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(2)).best_effort().durability_volatile();
+    auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(2)).reliable().durability_volatile();
     auto scan_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
 
     aligned_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(aligned_topic_, cloud_qos);
