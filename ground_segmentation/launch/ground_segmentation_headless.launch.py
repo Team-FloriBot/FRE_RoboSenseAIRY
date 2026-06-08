@@ -136,9 +136,5 @@ def generate_launch_description():
                 'crop_max_height': 0.50,
                 'crop_max_ground_offset': 0.2,
             }],
-            remappings=[
-                ('/tf', '/robosense/blocked_tf'),
-                ('/tf_static', '/robosense/blocked_tf_static'),
-            ]
         ),
     ])
